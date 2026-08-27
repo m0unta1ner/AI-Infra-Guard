@@ -62,8 +62,10 @@ type CmdContent struct {
 }
 
 type CmdConfig struct {
-	StatusId string
-	Status   string
+	StatusId              string
+	Status                string
+	DeferResultCompletion bool
+	ScanResult            map[string]interface{}
 }
 
 type PromptContent struct {
@@ -154,15 +156,41 @@ func ParseStdoutLine(server, rootDir string, tasks []SubTask, line string, callb
 		}
 		callbacks.ToolUseLogCallback(content.ToolId, content.ToolName, content.StepId, content.Log)
 	case AgentMsgTypeResultUpdate:
-		for i, _ := range tasks {
-			tasks[i].Status = SubTaskStatusDone
-		}
-		callbacks.PlanUpdateCallback(tasks)
 		var content map[string]interface{}
 		if err := json.Unmarshal(cmd.Content, &content); err != nil {
 			gologger.WithError(err).Errorln("Failed to AgentMsgTypeResultUpdate unmarshal command", cmd.Content)
 			return
 		}
+		if config.DeferResultCompletion {
+			result := content
+			if nested, ok := content["content"].(map[string]interface{}); ok {
+				result = nested
+			}
+			config.ScanResult = result
+			for i := range tasks {
+				if i == len(tasks)-1 {
+					tasks[i].Status = SubTaskStatusDoing
+				} else {
+					tasks[i].Status = SubTaskStatusDone
+				}
+			}
+			callbacks.PlanUpdateCallback(tasks)
+			partialResult := make(map[string]interface{}, len(result)+2)
+			for key, value := range result {
+				partialResult[key] = value
+			}
+			partialResult["partial"] = true
+			partialResult["prompt_bank"] = map[string]interface{}{
+				"enabled": true,
+				"status":  "running",
+			}
+			callbacks.ResultCallback(partialResult)
+			return
+		}
+		for i := range tasks {
+			tasks[i].Status = SubTaskStatusDone
+		}
+		callbacks.PlanUpdateCallback(tasks)
 		if upload {
 			var ret []map[string]interface{}
 			dd, err := json.Marshal(content["content"])

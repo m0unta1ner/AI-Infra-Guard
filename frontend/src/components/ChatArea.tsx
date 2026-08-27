@@ -128,6 +128,7 @@ const ChatArea: React.FC<ChatAreaProps> = ({ selectedStep, onStepSelect, onMcpRe
   const [selectedAgent, setSelectedAgent] = useState<string | undefined>(undefined);
   const [selectedAttackMethods, setSelectedAttackMethods] = useState<string[]>([]);
   const [maxEvaluationCount, setMaxEvaluationCount] = useState<number>(-1);
+  const [promptBankEnabled, setPromptBankEnabled] = useState(true);
 
   // Message queue related state
   const [messageQueue, setMessageQueue] = useState<QueueItem[]>([]);
@@ -312,12 +313,9 @@ const ChatArea: React.FC<ChatAreaProps> = ({ selectedStep, onStepSelect, onMcpRe
         break;
         
       case 'resultUpdate':
-        // Check whether a result message already exists to avoid duplicate additions
-        const resultTask = stateRef.current.tasks.find(task => task.id === data.sessionId);
-        const hasResultMessage = resultTask?.messages.some(msg => msg.type === 'result');
-        
-        if (!hasResultMessage) {
-          actions.updateTaskResult(data.sessionId, data.event.result, data.event.timestamp);
+        const isPartialResult = data.event.result?.partial === true;
+        actions.updateTaskResult(data.sessionId, data.event.result, data.event.timestamp);
+        if (!isPartialResult) {
           actions.completeTask(data.sessionId, data.event);
         }
         break;
@@ -408,7 +406,10 @@ const ChatArea: React.FC<ChatAreaProps> = ({ selectedStep, onStepSelect, onMcpRe
       
       // Deduplicate 'resultUpdate' events to avoid duplicate result messages
       if (type === 'resultUpdate') {
-        return true;
+        // Skill Scan emits two meaningful results: a partial scan result and
+        // a final result containing the Prompt Bank. They must not collapse
+        // into one queue item.
+        return item.data.event?.result?.partial === data.event?.result?.partial;
       }
       
       // For other types, check for the same planStepId (if present)
@@ -870,6 +871,15 @@ const ChatArea: React.FC<ChatAreaProps> = ({ selectedStep, onStepSelect, onMcpRe
         params.agent_id = selectedAgent;
       }
 
+      // Skill Scan generates a Prompt Bank by default; allow the user to disable
+      // this page-only post-processing without changing standalone CLI behavior.
+      if (taskType === 'Skill-Scan') {
+        params.prompt_bank = {
+          enabled: promptBankEnabled,
+          cases_per_vulnerability: 3,
+        };
+      }
+
       const requestBody = {
         id: taskId,
         sessionId: taskId,
@@ -1004,13 +1014,15 @@ const ChatArea: React.FC<ChatAreaProps> = ({ selectedStep, onStepSelect, onMcpRe
           sessionId,
           event: data.event,
         });
-        eventSource.close();
-        // Remove from the active connection list
-        setActiveSSEConnections(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(sessionId);
-          return newSet;
-        });
+        if (data.event.result.partial !== true) {
+          eventSource.close();
+          // Remove from the active connection list
+          setActiveSSEConnections(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(sessionId);
+            return newSet;
+          });
+        }
       }
     });
 
@@ -1443,6 +1455,8 @@ const ChatArea: React.FC<ChatAreaProps> = ({ selectedStep, onStepSelect, onMcpRe
               onMaxEvaluationCountChange={setMaxEvaluationCount}
               welcomeAnimationCompleted={welcomeAnimationCompleted}
               isSending={isSending}
+              promptBankEnabled={promptBankEnabled}
+              onPromptBankEnabledChange={setPromptBankEnabled}
             />
             <HttpHeaderDialog
               open={showHttpHeaderDialog}
@@ -1760,7 +1774,9 @@ const ChatArea: React.FC<ChatAreaProps> = ({ selectedStep, onStepSelect, onMcpRe
                         </span>
                       </div>
                       <div className='text-gray-900 whitespace-pre-wrap p-6 py-2'>
-                        {currentTask?.type === 'Model-Redteam-Report' ? (
+                        {message.partial && currentTask?.type === 'Skill-Scan' ? (
+                          <>扫描完成，正在生成 Prompt 题库...</>
+                        ) : currentTask?.type === 'Model-Redteam-Report' ? (
                           <>{t('chatArea.taskCompleted.redteamReport')}</>
                         ) : currentTask?.type === 'Model-Jailbreak' ? (
                           <>{t('chatArea.taskCompleted.jailbreak')}</>
@@ -1864,6 +1880,8 @@ const ChatArea: React.FC<ChatAreaProps> = ({ selectedStep, onStepSelect, onMcpRe
         maxEvaluationCount={maxEvaluationCount}
         onMaxEvaluationCountChange={setMaxEvaluationCount}
         isSending={isSending}
+        promptBankEnabled={promptBankEnabled}
+        onPromptBankEnabledChange={setPromptBankEnabled}
       />
       <HttpHeaderDialog
         open={showHttpHeaderDialog}

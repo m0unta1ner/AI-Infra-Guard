@@ -128,10 +128,14 @@ paths:
       consumes:
       - application/json
       description: |-
-        Submit a new task for processing. Supports three types of tasks:
+        Submit a new task for processing. Supports the following types of tasks:
         1. MCP Scan (mcp_scan): Model Context Protocol security scanning
         2. AI Infra Scan (ai_infra_scan): AI infrastructure security scanning
         3. Model Redteam Report (model_redteam_report): AI model red team testing
+        4. Skill Scan (skill_scan): Agent Skill code security scanning. The optional
+           params.prompt_bank.enabled flag enables the asynchronous Prompt case-bank
+           generation stage (default true in the web UI); failures do not discard the
+           original scan result.
 
         Request Body Examples:
 

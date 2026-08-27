@@ -41,7 +41,7 @@ class LLM:
         self.client = openai.OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
-            timeout=60,
+            timeout=200,
             default_headers=default_headers if default_headers else None,
         )
         self.context_window = context_window

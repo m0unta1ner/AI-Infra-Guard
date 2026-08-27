@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-infra-guard.local/schemas/skill-prompt-case.json",
+  "type": "object",
+  "required": ["case_id", "skill_id", "prompt_type", "prompt", "expected", "vulnerability", "evidence", "metadata"],
+  "properties": {
+    "case_id": {"type": "string", "minLength": 1},
+    "skill_id": {"type": "string", "minLength": 1},
+    "prompt_type": {"enum": ["direct_trigger", "boundary_case", "refusal_case"]},
+    "prompt": {"type": "string", "minLength": 1, "maxLength": 12000},
+    "expected": {
+      "type": "object",
+      "required": ["label", "behavior", "must_not"],
+      "properties": {
+        "label": {"enum": ["malicious", "suspicious", "normal"]},
+        "behavior": {"type": "string", "minLength": 1},
+        "must_not": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+      },
+      "additionalProperties": false
+    },
+    "rationale": {"type": "string"},
+    "vulnerability": {"type": "object", "required": ["title", "risk_type", "level"]},
+    "evidence": {
+      "type": "object",
+      "required": ["source_file", "source_lines", "snippet", "verified"],
+      "properties": {
+        "source_file": {"type": "string", "minLength": 1},
+        "source_lines": {"type": "string", "minLength": 1},
+        "snippet": {"type": "string", "minLength": 1},
+        "verified": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "metadata": {"type": "object", "required": ["generator", "source_scan_id"]}
+  },
+  "additionalProperties": false
+}

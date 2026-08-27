@@ -31,8 +31,11 @@
 package websocket
 
 import (
+	"bufio"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -56,13 +59,13 @@ type ModelParams struct {
 type MCPTaskRequest struct {
 	Prompt string `json:"prompt,omitempty" example:"Enter a URL for remote MCP scan, or leave empty for source-code scan"` // Scan description or MCP server URL
 	Model  struct {
-		Model   string `json:"model,omitempty" example:"gpt-4"`                         // Model name - optional, falls back to system default
-		Token   string `json:"token,omitempty" example:"sk-xxx"`                        // API key - optional, falls back to system default
+		Model   string `json:"model,omitempty" example:"gpt-4"`                        // Model name - optional, falls back to system default
+		Token   string `json:"token,omitempty" example:"sk-xxx"`                       // API key - optional, falls back to system default
 		BaseUrl string `json:"base_url,omitempty" example:"https://api.openai.com/v1"` // Base URL - optional
 	} `json:"model,omitempty"` // Model configuration - optional, falls back to system default
-	Thread      int               `json:"thread,omitempty" example:"4"`              // Concurrent thread count
-	Language    string            `json:"language,omitempty" example:"zh"`           // Language code - optional
-	Attachments string            `json:"attachments,omitempty" example:"file1.zip"` // Attachment file path (upload first)
+	Thread      int               `json:"thread,omitempty" example:"4"`                                     // Concurrent thread count
+	Language    string            `json:"language,omitempty" example:"zh"`                                  // Language code - optional
+	Attachments string            `json:"attachments,omitempty" example:"file1.zip"`                        // Attachment file path (upload first)
 	Headers     map[string]string `json:"headers,omitempty" example:"{\"Authorization\":\"Bearer token\"}"` // Custom headers
 }
 
@@ -73,8 +76,8 @@ type AIInfraScanTaskRequest struct {
 	Headers map[string]string `json:"headers" example:"{\"Authorization\":\"Bearer token\"}"` // Custom request headers
 	Timeout int               `json:"timeout" example:"30"`                                   // Request timeout in seconds
 	Model   struct {
-		Model   string `json:"model,omitempty" example:"gpt-4"`               // Model name - optional, falls back to system default
-		Token   string `json:"token,omitempty" example:"sk-xxx"`              // API key - optional, falls back to system default
+		Model   string `json:"model,omitempty" example:"gpt-4"`                        // Model name - optional, falls back to system default
+		Token   string `json:"token,omitempty" example:"sk-xxx"`                       // API key - optional, falls back to system default
 		BaseUrl string `json:"base_url,omitempty" example:"https://api.openai.com/v1"` // Base URL - optional
 	} `json:"model,omitempty"` // Model configuration - optional, falls back to system default
 }
@@ -103,28 +106,28 @@ type PromptSecurityTaskRequest struct {
 // @Description Agent security scan task parameters. agent_id and agent_config are mutually exclusive:
 // agent_id references a config pre-saved on the server; agent_config passes YAML content inline without prior saving.
 type AgentScanTaskRequest struct {
-	AgentID     string      `json:"agent_id,omitempty" example:"demo-agent"`                              // Agent config name (mutually exclusive with agent_config)
-	AgentConfig string      `json:"agent_config,omitempty" example:"provider: dify\nbase_url: ..."`       // Inline YAML config content (mutually exclusive with agent_id)
-	EvalModel   ModelParams `json:"eval_model"`                                                           // Evaluation model config - optional, falls back to system default
-	Language    string      `json:"language,omitempty" example:"zh"`                                      // Language code - optional
+	AgentID     string      `json:"agent_id,omitempty" example:"demo-agent"`                                         // Agent config name (mutually exclusive with agent_config)
+	AgentConfig string      `json:"agent_config,omitempty" example:"provider: dify\nbase_url: ..."`                  // Inline YAML config content (mutually exclusive with agent_id)
+	EvalModel   ModelParams `json:"eval_model"`                                                                      // Evaluation model config - optional, falls back to system default
+	Language    string      `json:"language,omitempty" example:"zh"`                                                 // Language code - optional
 	Prompt      string      `json:"prompt,omitempty" example:"Focus on privilege escalation and data leakage risks"` // Additional scan instructions - optional
 }
 
 // APIResponse is the common API response structure
 type APIResponse struct {
-	Status  int         `json:"status" example:"0"`     // Status code: 0=success, 1=failure
-	Message string      `json:"message" example:"ok"`     // Response message
-	Data    interface{} `json:"data"`     // Response data
+	Status  int         `json:"status" example:"0"`   // Status code: 0=success, 1=failure
+	Message string      `json:"message" example:"ok"` // Response message
+	Data    interface{} `json:"data"`                 // Response data
 }
 
 // TaskStatusResponse holds the task status response
 type TaskStatusResponse struct {
 	SessionID string `json:"session_id" example:"550e8400-e29b-41d4-a716-446655440000"` // Task session ID
 	Status    string `json:"status" example:"running"`                                  // Task status: pending, running, completed, failed
-	Title     string `json:"title" example:"MCP Scan Task"`                                   // Task title
+	Title     string `json:"title" example:"MCP Scan Task"`                             // Task title
 	CreatedAt int64  `json:"created_at" example:"1640995200000"`                        // Creation timestamp (ms)
 	UpdatedAt int64  `json:"updated_at" example:"1640995200000"`                        // Last update timestamp (ms)
-	Log       string `json:"log" example:"Task execution log..."`                           // Task execution log
+	Log       string `json:"log" example:"Task execution log..."`                       // Task execution log
 }
 
 // TaskCreateResponse holds the task creation response
@@ -665,13 +668,11 @@ func GetTaskResult(c *gin.Context, tm *TaskManager) {
 		})
 		return
 	}
-	msg := messages[0]
-	// Parse event data
-	var eventData map[string]interface{}
-	if err := json.Unmarshal(msg.EventData, &eventData); err != nil {
+	eventData, ok := latestFinalResult(messages)
+	if !ok {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  1,
-			"message": "failed to retrieve task result",
+			"message": "task result not available yet",
 			"data":    nil,
 		})
 		return
@@ -681,4 +682,94 @@ func GetTaskResult(c *gin.Context, tm *TaskManager) {
 		"message": "ok",
 		"data":    eventData,
 	})
+}
+
+// GetPromptBank returns structured Prompt Bank cases for a completed Skill Scan.
+func GetPromptBank(c *gin.Context, tm *TaskManager) {
+	sessionID := c.Param("sessionId")
+	if !isValidSessionID(sessionID) {
+		c.JSON(http.StatusBadRequest, gin.H{"status": 1, "message": "invalid session ID format", "data": nil})
+		return
+	}
+	messages, err := tm.taskStore.GetSessionEventsByType(sessionID, "resultUpdate")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": 1, "message": "failed to retrieve prompt bank", "data": nil})
+		return
+	}
+	result, ok := latestFinalResult(messages)
+	if !ok {
+		c.JSON(http.StatusOK, gin.H{"status": 1, "message": "prompt bank is not ready", "data": nil})
+		return
+	}
+	resultPayload, _ := result["result"].(map[string]interface{})
+	if resultPayload == nil {
+		resultPayload = result
+	}
+	promptBank, ok := resultPayload["prompt_bank"].(map[string]interface{})
+	if !ok || promptBank["enabled"] != true {
+		c.JSON(http.StatusOK, gin.H{"status": 0, "message": "prompt bank is disabled", "data": gin.H{"cases": []interface{}{}}})
+		return
+	}
+	fileName, _ := promptBank["file"].(string)
+	fileName = filepath.Base(strings.TrimLeft(fileName, "/"))
+	if fileName == "." || fileName == "" {
+		c.JSON(http.StatusOK, gin.H{"status": 1, "message": "prompt bank is not ready", "data": nil})
+		return
+	}
+	baseDir, _ := filepath.Abs(tm.fileConfig.UploadDir)
+	absFilePath, _ := filepath.Abs(filepath.Join(baseDir, fileName))
+	if !strings.HasPrefix(absFilePath, baseDir+string(filepath.Separator)) {
+		c.JSON(http.StatusBadRequest, gin.H{"status": 1, "message": "invalid prompt bank file", "data": nil})
+		return
+	}
+	file, err := os.Open(absFilePath)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"status": 1, "message": "prompt bank file not found", "data": nil})
+		return
+	}
+	defer file.Close()
+	cases := make([]map[string]interface{}, 0)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var item map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &item); err == nil {
+			cases = append(cases, item)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"status": 1, "message": "failed to read prompt bank", "data": nil})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":  0,
+		"message": "ok",
+		"data": gin.H{
+			"status":           promptBank["status"],
+			"valid_case_count": promptBank["valid_case_count"],
+			"cases":            cases,
+		},
+	})
+}
+
+func latestFinalResult(messages []*database.TaskMessage) (map[string]interface{}, bool) {
+	for i := len(messages) - 1; i >= 0; i-- {
+		var eventData map[string]interface{}
+		if err := json.Unmarshal(messages[i].EventData, &eventData); err != nil {
+			continue
+		}
+		payload, _ := eventData["result"].(map[string]interface{})
+		if payload == nil {
+			payload = eventData
+		}
+		if partial, ok := payload["partial"].(bool); ok && partial {
+			continue
+		}
+		return eventData, true
+	}
+	return nil, false
 }

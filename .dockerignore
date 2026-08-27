@@ -72,6 +72,8 @@ temp_uploads
 __pycache__
 *.tar.gz
 logs/*
+.pnpm-store/
+**/node_modules/
 .git
 .deepeval
 .deepteam

@@ -474,7 +474,16 @@ func (tm *TaskManager) HandleAgentEvent(sessionId string, eventType string, even
 		}
 	case "resultUpdate":
 		if convertedEvent, err := convertToStruct(event, &ResultUpdateEvent{}); err == nil {
-			if _, ok := convertedEvent.(*ResultUpdateEvent); ok {
+			if resultEvent, ok := convertedEvent.(*ResultUpdateEvent); ok {
+				// Skill Scan sends an intermediate result (partial=true) after
+				// vulnerability整理 so the report can be displayed while the
+				// optional prompt bank is generated. It is not task completion:
+				// accepting it as terminal would make the subsequent final result
+				// get filtered by shouldIgnoreAgentEvent.
+				if isPartialResult(resultEvent.Result) {
+					log.Infof("收到中间扫描结果，任务继续执行: sessionId=%s", sessionId)
+					break
+				}
 				log.Infof("任务完成: sessionId=%s", sessionId)
 
 				// 监控相关代码已移除
@@ -493,6 +502,21 @@ func (tm *TaskManager) HandleAgentEvent(sessionId string, eventType string, even
 	default:
 		log.Debugf("未知事件类型: sessionId=%s, eventType=%s", sessionId, eventType)
 	}
+}
+
+// isPartialResult identifies the interim result emitted by deferred workflows
+// (currently Skill Scan with prompt-bank generation enabled).
+func isPartialResult(result interface{}) bool {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return false
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return false
+	}
+	partial, ok := payload["partial"].(bool)
+	return ok && partial
 }
 
 // convertToStruct 将 interface{} 转换为指定的结构体类型
@@ -1559,4 +1583,3 @@ func maskParamsToken(params map[string]interface{}) {
 		maskModel(v)
 	}
 }
-

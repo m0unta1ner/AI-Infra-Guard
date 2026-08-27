@@ -76,6 +76,7 @@ export interface Message {
     total: number;
     results: any[];
   };
+  partial?: boolean;
   mcpResult?: MCPScanResult; // MCP scan result
   infraScanResult?: InfraScanResult; // AI infrastructure scan result
   redteamReportResult?: RedteamReportResult; // Model red-team evaluation result
@@ -120,6 +121,7 @@ export type AppAction =
   | { type: 'DELETE_TASK'; payload: string }
   | { type: 'SET_CURRENT_TASK'; payload: string | null }
   | { type: 'ADD_MESSAGE'; payload: { taskId: string; message: Message } }
+  | { type: 'UPSERT_RESULT_MESSAGE'; payload: { taskId: string; message: Message } }
   | { type: 'UPDATE_EXECUTION_STEP'; payload: { taskId: string; stepId: string; updates: Partial<ExecutionStep> } }
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'SET_ERROR'; payload: string | null }
@@ -140,6 +142,26 @@ export interface MCPReportItem {
   description: string;
 }
 
+export interface PromptBankCase {
+  case_id: string;
+  prompt_type: string;
+  prompt: string;
+  expected?: {
+    label?: string;
+    behavior?: string;
+    must_not?: string[];
+  };
+  rationale?: string;
+  vulnerability?: {
+    title?: string;
+    level?: string;
+  };
+  evidence?: {
+    source_file?: string;
+    source_lines?: string;
+  };
+}
+
 export interface MCPScanResult {
   target?: string; // Scan target
   plugins?: string[]; // Plugin list
@@ -151,6 +173,18 @@ export interface MCPScanResult {
   readme?: string; // README content
   results: MCPVulnerabilityResult[]; // Scan results
   report: MCPReportItem[]; // Explanations for vulnerabilities that were not detected
+  partial?: boolean;
+  prompt_bank?: {
+    enabled?: boolean;
+    status?: string;
+    case_count?: number;
+    valid_case_count?: number;
+    failed_case_count?: number;
+    file?: string;
+    summary_file?: string;
+    filename?: string;
+    error?: string;
+  };
 }
 
 // AI infrastructure scan result type definitions
