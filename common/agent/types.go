@@ -65,9 +65,10 @@ type statusString string
 
 // 子任务状态枚举
 const (
-	SubTaskStatusTodo  statusString = "todo"  // 待办
-	SubTaskStatusDoing statusString = "doing" // 执行中
-	SubTaskStatusDone  statusString = "done"  // 已完成
+	SubTaskStatusTodo   statusString = "todo"   // 待办
+	SubTaskStatusDoing  statusString = "doing"  // 执行中
+	SubTaskStatusDone   statusString = "done"   // 已完成
+	SubTaskStatusFailed statusString = "failed" // 失败
 )
 
 // 任务类型

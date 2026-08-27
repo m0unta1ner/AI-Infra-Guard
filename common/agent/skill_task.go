@@ -31,6 +31,7 @@ import (
 
 	"github.com/Tencent/AI-Infra-Guard/common/utils"
 	"github.com/Tencent/AI-Infra-Guard/internal/gologger"
+	"github.com/google/uuid"
 )
 
 // SkillTask performs security auditing of Agent Skill projects.
@@ -51,6 +52,10 @@ func (s *SkillTask) Execute(ctx context.Context, request TaskRequest, callbacks 
 			Token   string `json:"token"`
 			BaseUrl string `json:"base_url"`
 		} `json:"model"`
+		PromptBank struct {
+			Enabled               *bool `json:"enabled"`
+			CasesPerVulnerability int   `json:"cases_per_vulnerability"`
+		} `json:"prompt_bank"`
 	}
 
 	var params ScanSkillRequest
@@ -59,6 +64,14 @@ func (s *SkillTask) Execute(ctx context.Context, request TaskRequest, callbacks 
 	}
 	params.Content = request.Content
 	files := request.Attachments
+	promptBankEnabled := true
+	if params.PromptBank.Enabled != nil {
+		promptBankEnabled = *params.PromptBank.Enabled
+	}
+	casesPerVulnerability := params.PromptBank.CasesPerVulnerability
+	if casesPerVulnerability < 1 || casesPerVulnerability > 10 {
+		casesPerVulnerability = 3
+	}
 
 	// skill-scan only supports code mode: either uploaded files or a github.com URL
 	transport := "code"
@@ -147,11 +160,17 @@ func (s *SkillTask) Execute(ctx context.Context, request TaskRequest, callbacks 
 			"Code Audit",
 			"Vulnerability Review",
 		}
+		if promptBankEnabled {
+			taskTitles = append(taskTitles, "Prompt Bank Generation")
+		}
 	} else {
 		taskTitles = []string{
 			"信息收集",
 			"代码审计",
 			"漏洞整理",
+		}
+		if promptBankEnabled {
+			taskTitles = append(taskTitles, "题库生成")
 		}
 	}
 
@@ -160,7 +179,10 @@ func (s *SkillTask) Execute(ctx context.Context, request TaskRequest, callbacks 
 		tasks = append(tasks, CreateSubTask(SubTaskStatusTodo, title, 0, strconv.Itoa(i+1)))
 	}
 	callbacks.PlanUpdateCallback(tasks)
-	config := CmdConfig{StatusId: ""}
+	config := CmdConfig{
+		StatusId:              "",
+		DeferResultCompletion: promptBankEnabled,
+	}
 	skillScanDir, err := utils.ResolveSkillScanDir()
 	if err != nil {
 		return fmt.Errorf("resolve skill-scan directory: %v", err)
@@ -172,5 +194,241 @@ func (s *SkillTask) Execute(ctx context.Context, request TaskRequest, callbacks 
 	err = utils.RunCmdWithContext(ctx, skillScanDir, uvBin, argv, func(line string) {
 		ParseStdoutLine(s.Server, skillScanDir, tasks, line, callbacks, &config, false)
 	})
+	if err != nil {
+		return err
+	}
+	if !promptBankEnabled {
+		return nil
+	}
+	err = s.generatePromptBank(ctx, request, params.Model.Model, params.Model.Token, params.Model.BaseUrl,
+		language, folder, casesPerVulnerability, tasks, callbacks, config.ScanResult)
+	if err != nil && config.ScanResult != nil {
+		// Prompt Bank is an optional post-processing stage. Preserve the completed
+		// Skill Scan result even when its setup or execution fails.
+		callbacks.StepStatusUpdateCallback(strconv.Itoa(len(tasks)), uuid.NewString(), AgentStatusFailed,
+			"题库生成失败", err.Error())
+		return s.finishPromptBankResult(request, tasks, callbacks, config.ScanResult, map[string]interface{}{
+			"enabled": true,
+			"status":  "failed",
+			"error":   err.Error(),
+		}, false)
+	}
 	return err
+}
+
+func (s *SkillTask) generatePromptBank(
+	ctx context.Context,
+	request TaskRequest,
+	model string,
+	apiKey string,
+	baseURL string,
+	language string,
+	repoDir string,
+	casesPerVulnerability int,
+	tasks []SubTask,
+	callbacks TaskCallbacks,
+	scanResult map[string]interface{},
+) error {
+	if scanResult == nil {
+		return errors.New("skill scan returned no result for prompt bank generation")
+	}
+
+	stepID := strconv.Itoa(len(tasks))
+	statusID := uuid.NewString()
+	callbacks.StepStatusUpdateCallback(stepID, statusID, AgentStatusRunning,
+		"题库生成", "根据中高危漏洞生成并校验 Prompt 题目")
+
+	// RunCmdWithContext changes the child process working directory to the
+	// prompt-bank module. Use absolute paths so files created by the agent
+	// remain addressable from that different working directory.
+	tempDir, err := filepath.Abs("uploads")
+	if err != nil {
+		return fmt.Errorf("resolve prompt bank temp directory: %w", err)
+	}
+	if err := os.MkdirAll(tempDir, 0755); err != nil {
+		return fmt.Errorf("create prompt bank temp directory: %w", err)
+	}
+	inputFile, err := os.CreateTemp(tempDir, "prompt-bank-scan-*.json")
+	if err != nil {
+		return fmt.Errorf("create prompt bank input: %w", err)
+	}
+	inputPath := inputFile.Name()
+	defer os.Remove(inputPath)
+	if err := json.NewEncoder(inputFile).Encode(scanResult); err != nil {
+		inputFile.Close()
+		return fmt.Errorf("write prompt bank input: %w", err)
+	}
+	if err := inputFile.Close(); err != nil {
+		return fmt.Errorf("close prompt bank input: %w", err)
+	}
+
+	outputFile, err := os.CreateTemp(tempDir, "prompt-bank-*.jsonl")
+	if err != nil {
+		return fmt.Errorf("create prompt bank output: %w", err)
+	}
+	outputPath := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputPath)
+	summaryFile, err := os.CreateTemp(tempDir, "prompt-bank-summary-*.json")
+	if err != nil {
+		return fmt.Errorf("create prompt bank summary: %w", err)
+	}
+	summaryPath := summaryFile.Name()
+	summaryFile.Close()
+	defer os.Remove(summaryPath)
+
+	promptBankDir, err := utils.ResolveSkillPromptBankDir()
+	if err != nil {
+		return fmt.Errorf("resolve skill-promptbank directory: %w", err)
+	}
+	uvBin, err := utils.ResolveUvBin()
+	if err != nil {
+		return fmt.Errorf("resolve uv binary: %w", err)
+	}
+	args := []string{
+		"run", "main.py",
+		"--repo", repoDir,
+		"--scan-result", inputPath,
+		"--output", outputPath,
+		"--summary-output", summaryPath,
+		"--model", model,
+		"--base-url", baseURL,
+		"--language", language,
+		"--cases-per-vulnerability", strconv.Itoa(casesPerVulnerability),
+		"--source-scan-id", request.SessionId,
+	}
+	extraEnv := map[string]string{}
+	if apiKey != "" {
+		extraEnv["AIG_SKILL_PROMPTBANK_API_KEY"] = apiKey
+	}
+	err = utils.RunCmdWithContextEnv(ctx, promptBankDir, uvBin, args, extraEnv, func(line string) {
+		gologger.Debugf("skill-promptbank: %s", line)
+		s.forwardPromptBankProgress(line, stepID, callbacks)
+	})
+	if err != nil {
+		callbacks.StepStatusUpdateCallback(stepID, uuid.NewString(), AgentStatusFailed,
+			"题库生成失败", err.Error())
+		return s.finishPromptBankResult(request, tasks, callbacks, scanResult, map[string]interface{}{
+			"enabled": true,
+			"status":  "failed",
+			"error":   err.Error(),
+		}, false)
+	}
+
+	summary := map[string]interface{}{}
+	if data, readErr := os.ReadFile(summaryPath); readErr == nil {
+		if jsonErr := json.Unmarshal(data, &summary); jsonErr != nil {
+			gologger.WithError(jsonErr).Warnln("Failed to parse prompt bank summary")
+		}
+	}
+	callbacks.StepStatusUpdateCallback(stepID, uuid.NewString(), AgentStatusRunning,
+		"题库生成", "正在上传题库文件")
+	attachment := map[string]interface{}{
+		"enabled": true,
+		"status":  "completed",
+	}
+	for key, value := range summary {
+		attachment[key] = value
+	}
+	if info, uploadErr := utils.UploadFile(s.Server, outputPath); uploadErr == nil {
+		attachment["file"] = info.Data.FileUrl
+		attachment["filename"] = info.Data.Filename
+	} else {
+		attachment["status"] = "completed_with_errors"
+		attachment["upload_error"] = uploadErr.Error()
+	}
+	if info, uploadErr := utils.UploadFile(s.Server, summaryPath); uploadErr == nil {
+		attachment["summary_file"] = info.Data.FileUrl
+	} else {
+		attachment["summary_upload_error"] = uploadErr.Error()
+	}
+	if summaryStatus, ok := summary["status"].(string); ok && summaryStatus != "" && summaryStatus != "completed" {
+		attachment["status"] = summaryStatus
+	}
+	if _, ok := attachment["upload_error"]; ok {
+		attachment["status"] = "completed_with_errors"
+	}
+	if _, ok := attachment["summary_upload_error"]; ok && attachment["status"] == "completed" {
+		attachment["status"] = "completed_with_errors"
+	}
+	validCaseCount := 0.0
+	if value, ok := attachment["valid_case_count"].(float64); ok {
+		validCaseCount = value
+	}
+	noVulnerabilities := summary["reason"] == "no_vulnerabilities"
+	promptBankSucceeded := noVulnerabilities || (validCaseCount > 0 && attachment["status"] != "failed")
+	brief := "题库生成完成"
+	if !promptBankSucceeded {
+		brief = "题库生成失败"
+	} else if attachment["status"] != "completed" {
+		brief = "题库生成完成（存在失败项）"
+	}
+	finalStatus := AgentStatusCompleted
+	if !promptBankSucceeded {
+		finalStatus = AgentStatusFailed
+	}
+	callbacks.StepStatusUpdateCallback(stepID, uuid.NewString(), finalStatus,
+		brief, fmt.Sprintf("生成 %v 条有效题目", attachment["valid_case_count"]))
+	return s.finishPromptBankResult(request, tasks, callbacks, scanResult, map[string]interface{}(attachment), promptBankSucceeded)
+}
+
+func (s *SkillTask) forwardPromptBankProgress(line, stepID string, callbacks TaskCallbacks) {
+	var event struct {
+		Type            string `json:"type"`
+		Stage           string `json:"stage"`
+		Message         string `json:"message"`
+		Current         *int   `json:"current"`
+		Total           *int   `json:"total"`
+		ValidCaseCount  *int   `json:"valid_case_count"`
+		FailedCaseCount *int   `json:"failed_case_count"`
+	}
+	if err := json.Unmarshal([]byte(line), &event); err != nil || event.Type != "prompt_bank_progress" {
+		return
+	}
+	if event.Stage != "preparing" && event.Stage != "generating" && event.Stage != "validating" && event.Stage != "uploading" {
+		return
+	}
+	message := event.Message
+	if message == "" {
+		message = "题库生成中"
+	}
+	counts := make([]string, 0, 2)
+	if event.Current != nil && event.Total != nil {
+		counts = append(counts, fmt.Sprintf("漏洞 %d/%d", *event.Current, *event.Total))
+	}
+	if event.ValidCaseCount != nil {
+		counts = append(counts, fmt.Sprintf("有效题目 %d", *event.ValidCaseCount))
+	}
+	if event.FailedCaseCount != nil {
+		counts = append(counts, fmt.Sprintf("失败题目 %d", *event.FailedCaseCount))
+	}
+	if len(counts) > 0 {
+		message += "（" + strings.Join(counts, "，") + "）"
+	}
+	callbacks.StepStatusUpdateCallback(stepID, uuid.NewString(), AgentStatusRunning, "题库生成", message)
+}
+
+func (s *SkillTask) finishPromptBankResult(
+	request TaskRequest,
+	tasks []SubTask,
+	callbacks TaskCallbacks,
+	scanResult map[string]interface{},
+	promptBank map[string]interface{},
+	promptBankSucceeded bool,
+) error {
+	finalResult := make(map[string]interface{}, len(scanResult)+1)
+	for key, value := range scanResult {
+		finalResult[key] = value
+	}
+	finalResult["prompt_bank"] = promptBank
+	for i := range tasks {
+		if i == len(tasks)-1 && !promptBankSucceeded {
+			tasks[i].Status = SubTaskStatusFailed
+			continue
+		}
+		tasks[i].Status = SubTaskStatusDone
+	}
+	callbacks.PlanUpdateCallback(tasks)
+	callbacks.ResultCallback(finalResult)
+	return nil
 }

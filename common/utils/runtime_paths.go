@@ -9,11 +9,12 @@ import (
 )
 
 const (
-	AgentScanDirEnv      = "AIG_AGENT_SCAN_DIR"
-	McpScanDirEnv        = "AIG_MCP_SCAN_DIR"
-	SkillScanDirEnv      = "AIG_SKILL_SCAN_DIR"
-	PromptSecurityDirEnv = "AIG_PROMPT_SECURITY_DIR"
-	UvBinEnv             = "AIG_UV_BIN"
+	AgentScanDirEnv       = "AIG_AGENT_SCAN_DIR"
+	McpScanDirEnv         = "AIG_MCP_SCAN_DIR"
+	SkillScanDirEnv       = "AIG_SKILL_SCAN_DIR"
+	SkillPromptBankDirEnv = "AIG_SKILL_PROMPTBANK_DIR"
+	PromptSecurityDirEnv  = "AIG_PROMPT_SECURITY_DIR"
+	UvBinEnv              = "AIG_UV_BIN"
 )
 
 func ResolveAgentScanDir() (string, error) {
@@ -26,6 +27,10 @@ func ResolveMcpScanDir() (string, error) {
 
 func ResolveSkillScanDir() (string, error) {
 	return resolveRuntimeDir(SkillScanDirEnv, "/app/skill-scan", "skill-scan")
+}
+
+func ResolveSkillPromptBankDir() (string, error) {
+	return resolveRuntimeDir(SkillPromptBankDirEnv, "/app/skill-promptbank", "skill-promptbank")
 }
 
 func ResolvePromptSecurityDir() (string, error) {

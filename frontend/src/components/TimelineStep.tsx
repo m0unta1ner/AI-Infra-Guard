@@ -23,6 +23,18 @@ interface TimelineStepProps {
 const TimelineStep: React.FC<TimelineStepProps> = ({ step, index, isLast, onSelect, onToolSelect }) => {
   const [isExpanded, setIsExpanded] = useState(true);
 
+  // Prompt Bank emits a status update for every progress message. Keep only
+  // the newest one in the timeline; otherwise an earlier `doing` row keeps
+  // its spinner after the final completed update has arrived.
+  const latestPromptBankSubStepIndex = (step.subSteps || []).reduce(
+    (latestIndex, subStep, subStepIndex) =>
+      subStep.brief?.includes('题库生成') ? subStepIndex : latestIndex,
+    -1,
+  );
+  const visibleSubSteps = (step.subSteps || []).filter((subStep, subStepIndex) =>
+    !subStep.brief?.includes('题库生成') || subStepIndex === latestPromptBankSubStepIndex,
+  );
+
   const getStatusIcon = (status: ExecutionStep['status']) => {
     switch (status) {
       case 'todo':
@@ -127,9 +139,11 @@ const TimelineStep: React.FC<TimelineStepProps> = ({ step, index, isLast, onSele
               )}
 
               {/* Sub-step display */}
-              {step.subSteps && step.subSteps.length > 0 && (
+              {visibleSubSteps.length > 0 && (
                 <div className='space-y-2'>
-                  {step.subSteps.map((subStep, subIndex) => (
+                  {visibleSubSteps.map((subStep) => {
+                    const subIndex = step.subSteps?.findIndex(item => item.id === subStep.id) ?? 0;
+                    return (
                     <div key={subStep.id || subIndex} className='flex items-start space-x-3'>
                       <div className='flex items-center space-x-2 mt-2'>
                         {subStep.status === 'doing' && (
@@ -173,7 +187,8 @@ const TimelineStep: React.FC<TimelineStepProps> = ({ step, index, isLast, onSele
                         )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
 

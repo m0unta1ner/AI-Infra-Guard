@@ -68,6 +68,8 @@ interface FloatingInputAreaProps {
   onMaxEvaluationCountChange?: (count: number) => void;
   welcomeAnimationCompleted?: boolean;
   isSending?: boolean;
+  promptBankEnabled?: boolean;
+  onPromptBankEnabledChange?: (enabled: boolean) => void;
 }
 
 const JOYRIDE_SCROLL_OFFSET = 120;
@@ -179,6 +181,8 @@ const FloatingInputArea: React.FC<FloatingInputAreaProps> = ({
   onMaxEvaluationCountChange,
   welcomeAnimationCompleted = false,
   isSending = false,
+  promptBankEnabled = true,
+  onPromptBankEnabledChange,
 }) => {
   const { t, i18n } = useTranslation();
   
@@ -2261,7 +2265,31 @@ const FloatingInputArea: React.FC<FloatingInputAreaProps> = ({
                 </Tooltip>
               )}
 
-              
+              {taskType === 'Skill-Scan' && onPromptBankEnabledChange && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      size='sm'
+                      variant={promptBankEnabled ? 'default' : 'ghost'}
+                      className={`p-1 h-8 w-auto border rounded-[10px] gap-1 ${promptBankEnabled ? 'bg-blue-600 text-white border-blue-600' : ''}`}
+                      onClick={() => onPromptBankEnabledChange(!promptBankEnabled)}
+                      disabled={isSending}
+                    >
+                      <ShieldQuestion className='w-4 h-4' />
+                      <span className='text-xs'>
+                        {t('floatingInputArea.promptBank.label', { defaultValue: '题库' })}
+                      </span>
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      {promptBankEnabled
+                        ? t('floatingInputArea.promptBank.enabled', { defaultValue: '扫描完成后生成 Prompt 题库' })
+                        : t('floatingInputArea.promptBank.disabled', { defaultValue: '已关闭 Prompt 题库生成' })}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              )}
 
               {/* HTTP Header configuration button - shown only for the AI-Infra-Scan task type */}
               {shouldShowHttpHeaderButton && (
@@ -2944,4 +2972,4 @@ const FloatingInputArea: React.FC<FloatingInputAreaProps> = ({
   );
 };
 
-export default FloatingInputArea; 
+export default FloatingInputArea;

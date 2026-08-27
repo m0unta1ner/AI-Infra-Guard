@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ExecutionStep, MCPScanResult, MCPVulnerabilityResult, MCPReportItem } from '../../types';
+import { ExecutionStep, MCPScanResult, MCPVulnerabilityResult, MCPReportItem, PromptBankCase } from '../../types';
 import { 
   Clock, 
   CheckCircle, 
@@ -115,6 +115,34 @@ const McpStepDetail: React.FC<McpStepDetailProps> = ({
   }, [step?.subSteps, shouldAutoScroll]);
 
   const [activeTab, setActiveTab] = useState('results');
+  const [promptBankCases, setPromptBankCases] = useState<PromptBankCase[]>([]);
+  const [promptBankLoading, setPromptBankLoading] = useState(false);
+  const [promptBankError, setPromptBankError] = useState('');
+
+  useEffect(() => {
+    if (!isSkillScan || !sessionId || !mcpResult?.prompt_bank ||
+        !['completed', 'completed_with_errors'].includes(mcpResult.prompt_bank.status || '')) {
+      setPromptBankCases([]);
+      return;
+    }
+    let cancelled = false;
+    setPromptBankLoading(true);
+    setPromptBankError('');
+    fetch(`/api/v1/app/tasks/${sessionId}/prompt-bank`)
+      .then(response => response.json())
+      .then(payload => {
+        if (cancelled) return;
+        if (payload.status !== 0) throw new Error(payload.message || '题库加载失败');
+        setPromptBankCases(payload.data?.cases || []);
+      })
+      .catch(error => {
+        if (!cancelled) setPromptBankError(error instanceof Error ? error.message : '题库加载失败');
+      })
+      .finally(() => {
+        if (!cancelled) setPromptBankLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [isSkillScan, sessionId, mcpResult?.prompt_bank?.status, mcpResult?.prompt_bank?.valid_case_count]);
 
   if (!step && !mcpResult) {
     return (
@@ -434,6 +462,79 @@ const McpStepDetail: React.FC<McpStepDetailProps> = ({
                 ? 'max-w-[1200px] w-full mx-auto'
                 : 'w-full'
             }`}>
+              {isSkillScan && mcpResult.prompt_bank && (
+                <div className="mx-2 sm:mx-4 mb-4 rounded-xl border border-blue-100 bg-blue-50 p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <div className="font-medium text-blue-900">Prompt 题库</div>
+                      <div className="text-sm text-blue-700">
+                        状态：{mcpResult.prompt_bank.status || 'unknown'}，有效题目：{mcpResult.prompt_bank.valid_case_count || 0}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      {mcpResult.prompt_bank.file && (
+                        <a
+                          href={mcpResult.prompt_bank.file}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center rounded-md bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700"
+                        >
+                          <Download className="mr-1 h-4 w-4" /> 下载题库
+                        </a>
+                      )}
+                      {mcpResult.prompt_bank.summary_file && (
+                        <a
+                          href={mcpResult.prompt_bank.summary_file}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center rounded-md border border-blue-200 bg-white px-3 py-2 text-sm text-blue-700 hover:bg-blue-100"
+                        >
+                          下载摘要
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                  {mcpResult.prompt_bank.error && (
+                    <div className="mt-2 text-sm text-red-700">{mcpResult.prompt_bank.error}</div>
+                  )}
+                </div>
+              )}
+              {isSkillScan && mcpResult.prompt_bank?.status?.startsWith('completed') && (
+                <div className="mx-2 sm:mx-4 mb-4 rounded-xl border border-slate-200 bg-white p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div className="font-medium text-slate-900">题目内容</div>
+                    {promptBankLoading && <span className="text-sm text-slate-500">加载中...</span>}
+                  </div>
+                  {promptBankError && <div className="text-sm text-red-600">{promptBankError}</div>}
+                  {!promptBankLoading && !promptBankError && promptBankCases.length === 0 && (
+                    <div className="text-sm text-slate-500">暂无可展示题目</div>
+                  )}
+                  <div className="space-y-3">
+                    {promptBankCases.map((promptCase, index) => (
+                      <div key={promptCase.case_id || index} className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                          <span>#{index + 1}</span>
+                          <Badge variant="secondary">{promptCase.prompt_type}</Badge>
+                          {promptCase.vulnerability?.level && <Badge variant="outline">{promptCase.vulnerability.level}</Badge>}
+                          {promptCase.evidence?.source_file && (
+                            <span>{promptCase.evidence.source_file} {promptCase.evidence.source_lines || ''}</span>
+                          )}
+                        </div>
+                        <div className="whitespace-pre-wrap text-sm text-slate-900">{promptCase.prompt}</div>
+                        {promptCase.expected && (
+                          <div className="mt-3 rounded-md border border-emerald-100 bg-emerald-50 p-3 text-sm text-emerald-900">
+                            <div><span className="font-medium">预期标签：</span>{promptCase.expected.label || '-'}</div>
+                            <div><span className="font-medium">预期行为：</span>{promptCase.expected.behavior || '-'}</div>
+                            {promptCase.expected.must_not?.length ? (
+                              <div><span className="font-medium">禁止行为：</span>{promptCase.expected.must_not.join('；')}</div>
+                            ) : null}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                 <div className="flex-shrink-0 w-full">
                   <div className={`bg-white w-full ${
@@ -696,14 +797,34 @@ const McpStepDetail: React.FC<McpStepDetailProps> = ({
         {step.subSteps && step.subSteps.length > 0 && (
           <div className="p-4">
             <div className="space-y-4">
-              {step.subSteps.map((subStep, subIndex) => {
+              {(() => {
+                const latestPromptBankProgressIndex = step.subSteps.reduce((latestIndex, currentSubStep, currentIndex) => {
+                  const isPromptBankStatus = isSkillScan &&
+                    currentSubStep.brief?.includes('题库生成') &&
+                    !!currentSubStep.description;
+                  return isPromptBankStatus ? currentIndex : latestIndex;
+                }, -1);
+
+                return step.subSteps.map((subStep, subIndex) => {
                 // Check whether any tool in this subStep contains actionLog
                 const hasActionLogTools = subStep.toolUsed && subStep.toolUsed.some(tool => 
                   tool.actionLog && tool.actionLog.trim() !== ''
                 );
+
+                // Prompt Bank progress is a replaceable status line. Keep only
+                // the newest one so stale loading indicators do not remain on
+                // screen and mislead the user.
+                const isPromptBankProgress = isSkillScan &&
+                  subStep.brief?.includes('题库生成') &&
+                  !!subStep.description;
+
+                if (isPromptBankProgress && subIndex !== latestPromptBankProgressIndex) {
+                  return null;
+                }
                 
-                // Skip this subStep when none of its tools has an actionLog
-                if (!hasActionLogTools) {
+                // Skip ordinary status-only subSteps, but retain Prompt Bank
+                // progress updates for the Skill Scan detail view.
+                if (!hasActionLogTools && !isPromptBankProgress) {
                   return null;
                 }
                 
@@ -791,7 +912,8 @@ const McpStepDetail: React.FC<McpStepDetailProps> = ({
                     )}
                   </div>
                 );
-              })}
+                });
+              })()}
             </div>
           </div>
         )}

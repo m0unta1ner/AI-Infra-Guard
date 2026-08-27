@@ -123,8 +123,26 @@ curl -X POST \
 #### Request Parameters
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| type | string | Yes | Task type: mcp_scan, ai_infra_scan, model_redteam_report, agent_scan |
+| type | string | Yes | Task type: mcp_scan, ai_infra_scan, model_redteam_report, agent_scan, skill_scan |
 | content | object | Yes | Task content, varies according to task type |
+
+For `skill_scan`, the optional `params.prompt_bank` object controls the page-side
+post-processing that generates a downloadable, evidence-verified Prompt case bank.
+It defaults to enabled in the web UI and is independent from the standalone
+`skill-scan` CLI:
+
+```json
+{
+  "prompt_bank": {
+    "enabled": true,
+    "cases_per_vulnerability": 3
+  }
+}
+```
+
+Only Critical/High/Medium findings are considered. The scan result is emitted
+before this optional stage; if generation fails, the original scan result is
+retained and the result includes `prompt_bank.status: "failed"`.
 
 #### Response Fields
 | Field | Type | Description |

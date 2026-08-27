@@ -121,8 +121,24 @@ curl -X POST \
 #### 请求参数
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| type | string | 是 | 任务类型：mcp_scan、ai_infra_scan、model_redteam_report、agent_scan |
+| type | string | 是 | 任务类型：mcp_scan、ai_infra_scan、model_redteam_report、agent_scan、skill_scan |
 | content | object | 是 | 任务内容，根据任务类型不同而不同 |
+
+对于 `skill_scan`，可通过可选的 `params.prompt_bank` 控制页面侧的题库后处理功能，
+生成可下载且经过证据校验的 Prompt 题库。Web 页面默认开启，独立运行的
+`skill-scan` CLI 不受此参数影响：
+
+```json
+{
+  "prompt_bank": {
+    "enabled": true,
+    "cases_per_vulnerability": 3
+  }
+}
+```
+
+题库仅处理 Critical/High/Medium 漏洞。扫描结果会先返回；题库生成失败时保留
+原始扫描结果，并在结果中返回 `prompt_bank.status: "failed"`。
 
 #### 响应字段
 | 字段名 | 类型 | 说明 |

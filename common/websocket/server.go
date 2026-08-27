@@ -214,6 +214,10 @@ func RunWebServer(options *version.Options) {
 				tasks.GET("/sse/:sessionId", func(c *gin.Context) {
 					HandleTaskSSE(c, taskManager)
 				})
+				// Prompt题库结构化查询接口
+				tasks.GET("/:sessionId/prompt-bank", func(c *gin.Context) {
+					GetPromptBank(c, taskManager)
+				})
 				// 新建任务接口
 				tasks.POST("", func(c *gin.Context) {
 					HandleTaskCreate(c, taskManager)

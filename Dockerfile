@@ -2,6 +2,9 @@
 # 第一阶段：构建前端
 FROM node:22-alpine AS frontend-builder
 
+ENV COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
+    NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+
 # 安装pnpm
 RUN corepack enable && corepack prepare pnpm@latest --activate
 
@@ -11,22 +14,27 @@ WORKDIR /app/frontend
 COPY frontend/package.json frontend/pnpm-lock.yaml ./
 
 # 安装依赖
-RUN pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm config set registry https://registry.npmmirror.com && \
+    pnpm install --frozen-lockfile --ignore-scripts
 
 # 复制前端源代码
 COPY frontend/ .
 
 # 构建前端
-RUN pnpm build
+RUN CI=true pnpm build
 
 # 第二阶段：构建Go应用
 FROM golang:1.23.2-alpine AS builder
+
+ARG GOPROXY=https://mirrors.aliyun.com/goproxy|https://proxy.golang.org|direct
+ENV GOPROXY=${GOPROXY}
 
 # 设置工作目录
 WORKDIR /app
 
 # 安装必要的构建工具
-RUN apk add --no-cache git ca-certificates tzdata
+RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.aliyun.com/alpine|g' /etc/apk/repositories && \
+    apk add --no-cache git ca-certificates tzdata
 
 # 复制源代码（包含go.mod和go.sum）
 COPY . .
@@ -44,16 +52,20 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -trimpath -buildvcs=false
 # 第二阶段：运行阶段（使用Python 3.12 Alpine镜像）
 FROM python:3.12-alpine
 
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+
 # 安装运行时依赖
-RUN apk add --no-cache \
+RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.aliyun.com/alpine|g' /etc/apk/repositories && \
+    apk add --no-cache \
     ca-certificates \
     tzdata \
     bash \
     curl \
     git
 
-# 安装uv到/usr/local/bin
-RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
+# 从国内 PyPI 镜像安装 uv
+RUN python -m pip install --no-cache-dir uv
 
 # 设置工作目录
 WORKDIR /app

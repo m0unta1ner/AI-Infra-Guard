@@ -1,0 +1,14 @@
+[project]
+name = "aig-skill-promptbank"
+version = "0.1.0"
+description = "Generate verifiable Prompt cases from Skill Scan findings"
+requires-python = ">=3.9"
+dependencies = [
+  "openai>=1.0,<3",
+  "jsonschema>=4.20,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]

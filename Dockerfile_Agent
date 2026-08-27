@@ -1,8 +1,12 @@
 # Stage 1: Build stage
 FROM golang:1.23.2-alpine AS builder
 
+ARG GOPROXY=https://mirrors.aliyun.com/goproxy|https://proxy.golang.org|direct
+ENV GOPROXY=${GOPROXY}
+
 # Install necessary system dependencies
-RUN apk add --no-cache git ca-certificates
+RUN sed -i 's|https://dl-cdn.alpinelinux.org/alpine|https://mirrors.aliyun.com/alpine|g' /etc/apk/repositories && \
+    apk add --no-cache git ca-certificates
 
 # Set working directory
 WORKDIR /app
@@ -22,13 +26,19 @@ FROM python:3.12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     DEEPEVAL_TELEMETRY_OPT_OUT=YES \
     DEEPTEAM_TELEMETRY_OPT_OUT=YES
 
 WORKDIR /app/AIG-PromptSecurity
 
 RUN set -eux; \
-    apt-get update --allow-releaseinfo-change; \
+    sed -i \
+        -e 's|https\?://deb.debian.org/debian-security|https://mirrors.aliyun.com/debian-security|g' \
+        -e 's|https\?://deb.debian.org/debian|https://mirrors.aliyun.com/debian|g' \
+        /etc/apt/sources.list.d/debian.sources; \
+    apt-get update --allow-releaseinfo-change -o Acquire::Retries=3; \
     apt-get install -y --no-install-recommends \
         git \
         curl \
@@ -64,6 +74,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ./skill-scan /app/skill-scan/
 WORKDIR /app/skill-scan
 RUN uv sync
+
+COPY ./skill-promptbank /app/skill-promptbank/
+WORKDIR /app/skill-promptbank
+RUN uv sync --no-dev
 
 COPY ./services/api_checker/requirements.txt /tmp/api-checker-requirements.txt
 RUN python -m venv /app/api-checker-venv && \

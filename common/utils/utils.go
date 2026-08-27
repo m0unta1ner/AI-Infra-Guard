@@ -26,8 +26,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"errors"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -478,6 +478,13 @@ func RunCmd(dir, name string, arg []string, callback func(line string)) error {
 }
 
 func RunCmdWithContext(ctx context.Context, dir, name string, arg []string, callback func(line string)) error {
+	return RunCmdWithContextEnv(ctx, dir, name, arg, nil, callback)
+}
+
+// RunCmdWithContextEnv runs a command with additional environment variables.
+// The variables are kept out of the command line so secrets do not appear in
+// process listings or command logs.
+func RunCmdWithContextEnv(ctx context.Context, dir, name string, arg []string, extraEnv map[string]string, callback func(line string)) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -486,8 +493,22 @@ func RunCmdWithContext(ctx context.Context, dir, name string, arg []string, call
 	cmd := exec.CommandContext(ctx, name, arg...)
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
+	for key, value := range extraEnv {
+		prefix := key + "="
+		replaced := false
+		for i, entry := range cmd.Env {
+			if strings.HasPrefix(entry, prefix) {
+				cmd.Env[i] = prefix + value
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			cmd.Env = append(cmd.Env, prefix+value)
+		}
+	}
 	// 获取命令行
-	cmdStr := name + " " + strings.Join(arg, " ")
+	cmdStr := name + " " + strings.Join(redactCommandArgs(arg), " ")
 	gologger.Infof("开始执行命令: %s", cmdStr)
 	// 使用管道获取标准输出
 	stdout, err := cmd.StdoutPipe()
@@ -548,6 +569,29 @@ func RunCmdWithContext(ctx context.Context, dir, name string, arg []string, call
 	}
 
 	return nil
+}
+
+func redactCommandArgs(args []string) []string {
+	redacted := append([]string(nil), args...)
+	redactNext := false
+	for i, value := range redacted {
+		if redactNext {
+			redacted[i] = "[REDACTED]"
+			redactNext = false
+			continue
+		}
+		if value == "--api-key" || value == "--api_key" || value == "--token" {
+			redactNext = true
+			continue
+		}
+		for _, prefix := range []string{"--api-key=", "--api_key=", "--token="} {
+			if strings.HasPrefix(value, prefix) {
+				redacted[i] = prefix + "[REDACTED]"
+				break
+			}
+		}
+	}
+	return redacted
 }
 
 func IsHostname(hostname string) bool {

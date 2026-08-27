@@ -64,6 +64,21 @@ function appReducer(state: AppState, action: AppAction): AppState {
             : task
         ),
       };
+
+    case 'UPSERT_RESULT_MESSAGE':
+      return {
+        ...state,
+        tasks: state.tasks.map(task => {
+          if (task.id !== action.payload.taskId) return task;
+          const index = task.messages.findIndex(message => message.type === 'result');
+          if (index === -1) {
+            return { ...task, messages: [...task.messages, action.payload.message] };
+          }
+          const messages = [...task.messages];
+          messages[index] = action.payload.message;
+          return { ...task, messages };
+        }),
+      };
     
     case 'UPDATE_EXECUTION_STEP':
       return {
@@ -1002,6 +1017,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             results: result.results || [],
           },
           infraScanResult: result,
+          partial: !!result.partial,
         };
       } else if (task.type === 'Model-Redteam-Report') {
         // Model red-team evaluation result
@@ -1015,6 +1031,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             results: [],
           },
           redteamReportResult: result,
+          partial: !!result.partial,
         };
       } else if (task.type === 'Model-Jailbreak') {
         // Model one-click jailbreak result
@@ -1028,6 +1045,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             results: [],
           },
           jailbreakResult: result,
+          partial: !!result.partial,
         };
       } else if (task.type === 'Agent-Scan') {
         // Agent scan result
@@ -1041,6 +1059,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             results: result.results || [],
           },
           agentScanResult: result,
+          partial: !!result.partial,
         };
       } else {
         // MCP scan result
@@ -1054,31 +1073,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             results: result.results || [],
           },
           mcpResult: result,
+          partial: !!result.partial,
         };
       }
 
-      // Add the result message
-      dispatch({ type: 'ADD_MESSAGE', payload: { taskId, message: resultMessage } });
+      // Add or replace the current result message. Skill Scan emits a partial
+      // result before the optional Prompt Bank post-processing completes.
+      dispatch({ type: 'UPSERT_RESULT_MESSAGE', payload: { taskId, message: resultMessage } });
 
-      // Update task status
+      // Partial Skill Scan results must remain running while the optional
+      // Prompt Bank post-processing is still active.
+      const resultUpdates: Partial<Task> = {
+        result,
+        updatedAt: timestamp ? new Date(timestamp * 1000) : new Date(),
+      };
+      if (!result.partial) {
+        resultUpdates.status = 'completed';
+        resultUpdates.completedAt = timestamp ? new Date(timestamp * 1000) : new Date();
+      }
       dispatch({
         type: 'UPDATE_TASK',
-        payload: {
-          id: taskId,
-          updates: {
-            status: 'completed',
-            result,
-            updatedAt: timestamp ? new Date(timestamp * 1000) : new Date(),
-            completedAt: timestamp ? new Date(timestamp * 1000) : new Date(),
-          },
-        },
+        payload: { id: taskId, updates: resultUpdates },
       });
 
       // Check whether unfinished tasks remain; if not, stop the timer
       setTimeout(() => {
         const currentTasks = stateRef.current.tasks;
         const runningTasks = currentTasks.filter(task => task.status === 'running' || task.status === 'pending');
-        if (runningTasks.length === 0) {
+        if (!result.partial && runningTasks.length === 0) {
           stopTaskStatusCheck();
         }
       }, 1000);
