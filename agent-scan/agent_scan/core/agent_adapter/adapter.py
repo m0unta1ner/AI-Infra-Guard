@@ -31,7 +31,13 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 import yaml
-from pydantic import BaseModel, Field, Json
+from pydantic import BaseModel, ConfigDict, Field, Json
+
+from .sse_parser import SSEParseError, SSEParserConfig, parse_configured_sse
+
+
+class HTTPResponseLimitError(ValueError):
+    """Raised when a buffered HTTP response exceeds its configured limit."""
 
 try:
     from websockets.exceptions import ConnectionClosed, WebSocketException
@@ -62,7 +68,8 @@ class ProviderConfig(BaseModel):
     type: Optional[str] = None
     message_template: Optional[str] = None
     transform_response: Optional[str] = None
-    timeout_ms: Optional[int] = None
+    timeout_ms: Optional[int] = Field(default=None, ge=1000, le=300000)
+    sse: Optional[SSEParserConfig] = None
 
     # General config
     model: Optional[str] = None
@@ -109,6 +116,8 @@ class ProviderOptions(BaseModel):
 
 class ProviderResponseInfo(BaseModel):
     """Provider response information from API calls."""
+    model_config = ConfigDict(populate_by_name=True)
+
     raw: Optional[Any] = None
     output: Optional[str] = None
     error: Optional[str] = None
@@ -222,6 +231,8 @@ class AIProviderClient:
     """
 
     DEFAULT_TIMEOUT = 30
+    DEFAULT_HTTP_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+    DEFAULT_HTTP_MAX_ERROR_BYTES = 1024 * 1024
     DEFAULT_TEST_PROMPT = "Hi!"
     DEFAULT_WS_MAX_MESSAGES = 20
     DEFAULT_WS_MAX_RESPONSE_BYTES = 1024 * 1024
@@ -500,7 +511,10 @@ class AIProviderClient:
 
         body = self._render_prompt_body(config.body, prompt)
 
-        return self._make_http_request(url, method, headers, body, config.transform_response)
+        return self._make_http_request(
+            url, method, headers, body, config.transform_response,
+            sse_config=config.sse, timeout_ms=config.timeout_ms,
+        )
 
     def _render_prompt_body(self, body_template: Any, prompt: str) -> Any:
         """Render a provider request body by replacing prompt placeholders."""
@@ -945,84 +959,128 @@ class AIProviderClient:
             method: str,
             headers: Dict[str, str],
             body: Any,
-            transform_response: Optional[str] = None
+            transform_response: Optional[str] = None,
+            sse_config: Optional[SSEParserConfig] = None,
+            timeout_ms: Optional[int] = None,
     ) -> ProviderTestResult:
         """Make HTTP request and return standardized result."""
         start_time = time.time()
 
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.request(
+            timeout_seconds = max((timeout_ms / 1000.0) if timeout_ms else self.timeout, 1)
+            timeout = httpx.Timeout(timeout_seconds)
+            with httpx.Client(timeout=timeout) as client:
+                with client.stream(
                     method=method,
                     url=url,
                     headers=headers,
                     json=body if isinstance(body, dict) else None,
                     content=body if isinstance(body, str) else None
-                )
+                ) as response:
+                    response_headers = dict(response.headers)
+                    status_code = response.status_code
+                    content_type = response_headers.get("content-type", "").lower()
+                    is_sse = sse_config is not None or "text/event-stream" in content_type
+                    parser_metadata = {}
 
-                elapsed = time.time() - start_time
-                response_headers = dict(response.headers)
-                status_code = response.status_code
-                content_type = response_headers.get("content-type", "").lower()
+                    if not 200 <= status_code < 300:
+                        response_bytes = self._read_bounded_response(
+                            response, self.DEFAULT_HTTP_MAX_ERROR_BYTES
+                        )
+                        raw_response = self._decode_http_response(response_bytes)
+                        elapsed = time.time() - start_time
+                        error_msg = ""
+                        if isinstance(raw_response, dict):
+                            error = raw_response.get("error")
+                            if isinstance(error, dict):
+                                error_msg = error.get("message", "")
+                            else:
+                                error_msg = str(error or "") or raw_response.get("message", "")
+                        elif isinstance(raw_response, str):
+                            error_msg = raw_response
+                        provider_response = ProviderResponseInfo(
+                            raw=raw_response,
+                            error=error_msg or f"HTTP {status_code}",
+                            headers=response_headers,
+                            metadata={
+                                "status_code": status_code,
+                                "elapsed_time": f"{elapsed:.2f}s",
+                                "url": url,
+                                "method": method,
+                                "is_sse": is_sse,
+                            },
+                        )
+                        return ProviderTestResult(
+                            success=False,
+                            message=f"❌ Request failed with status {status_code}: {error_msg or 'Unknown error'}",
+                            provider_response=provider_response,
+                        )
 
-                # Check if response is SSE format
-                is_sse = "text/event-stream" in content_type
+                    if is_sse:
+                        if sse_config:
+                            raw_response, token_usage, parser_metadata = parse_configured_sse(
+                                response.iter_lines(), sse_config
+                            )
+                        else:
+                            response_bytes = self._read_bounded_response(
+                                response, self.DEFAULT_HTTP_MAX_RESPONSE_BYTES
+                            )
+                            raw_response, token_usage = self._parse_sse_response(
+                                response_bytes.decode("utf-8", errors="replace")
+                            )
+                    else:
+                        response_bytes = self._read_bounded_response(
+                            response, self.DEFAULT_HTTP_MAX_RESPONSE_BYTES
+                        )
+                        raw_response = self._decode_http_response(response_bytes)
+                        token_usage = raw_response.get("usage") if isinstance(raw_response, dict) else None
 
-                if is_sse:
-                    # Parse SSE response
-                    raw_response, token_usage = self._parse_sse_response(response.text)
-                else:
-                    try:
-                        raw_response = response.json()
-                    except:
-                        raw_response = response.text
-                    token_usage = raw_response.get("usage") if isinstance(raw_response, dict) else None
+                    elapsed = time.time() - start_time
+                    output = self._extract_output(raw_response, transform_response)
+                    provider_response = ProviderResponseInfo(
+                        raw=raw_response,
+                        output=output,
+                        headers=response_headers,
+                        token_usage=token_usage,
+                        metadata={
+                            "status_code": status_code,
+                            "elapsed_time": f"{elapsed:.2f}s",
+                            "url": url,
+                            "method": method,
+                            "is_sse": is_sse,
+                            **parser_metadata,
+                        }
+                    )
 
-                output = self._extract_output(raw_response, transform_response)
-
-                provider_response = ProviderResponseInfo(
-                    raw=raw_response,
-                    output=output,
-                    headers=response_headers,
-                    token_usage=token_usage,
-                    metadata={
-                        "status_code": status_code,
-                        "elapsed_time": f"{elapsed:.2f}s",
-                        "url": url,
-                        "method": method,
-                        "is_sse": is_sse
-                    }
-                )
-
-                if 200 <= status_code < 300:
                     return ProviderTestResult(
                         success=True,
                         message=f"✅ Connection successful! Status: {status_code}, Time: {elapsed:.2f}s",
                         provider_response=provider_response
                     )
-                else:
-                    error_msg = ""
-                    if isinstance(raw_response, dict):
-                        error_msg = raw_response.get("error", {}).get("message", "") or str(raw_response.get("error", "")) or raw_response.get("message", "")
-                    elif isinstance(raw_response, str):
-                        error_msg = raw_response
-                    return ProviderTestResult(
-                        success=False,
-                        message=f"❌ Request failed with status {status_code}: {error_msg or 'Unknown error'}",
-                        provider_response=provider_response
-                    )
 
 
+        except HTTPResponseLimitError as e:
+            return ProviderTestResult(
+                success=False,
+                message=f"❌ HTTP response rejected: {str(e)}",
+                provider_response=ProviderResponseInfo(error=str(e), metadata={"url": url})
+            )
+        except SSEParseError as e:
+            return ProviderTestResult(
+                success=False,
+                message=f"❌ SSE response parsing failed: {str(e)}",
+                provider_response=ProviderResponseInfo(error=str(e), metadata={"url": url, "is_sse": True})
+            )
         except httpx.TimeoutException:
             return ProviderTestResult(
                 success=False,
-                message=f"⏱️ Request timed out after {self.timeout} seconds",
+                message=f"⏱️ Request timed out after {timeout_seconds:.0f} seconds",
                 provider_response=ProviderResponseInfo(error="Timeout", metadata={"url": url})
             )
         except httpx.ConnectError as e:
             return ProviderTestResult(
                 success=False,
-                message=f"🔌 Connection refused: Cannot connect to {url}",
+                message=f"🔌 Connection failed: Cannot connect to {url} ({str(e)})",
                 provider_response=ProviderResponseInfo(error=str(e), metadata={"url": url})
             )
         except Exception as e:
@@ -1031,6 +1089,25 @@ class AIProviderClient:
                 message=f"❌ Error: {str(e)}",
                 provider_response=ProviderResponseInfo(error=str(e), metadata={"url": url})
             )
+
+    def _read_bounded_response(self, response: httpx.Response, max_bytes: int) -> bytes:
+        """Read a streaming HTTP response without allowing unbounded buffering."""
+        parts = []
+        total_bytes = 0
+        for part in response.iter_bytes():
+            total_bytes += len(part)
+            if total_bytes > max_bytes:
+                raise HTTPResponseLimitError(f"response exceeded {max_bytes} bytes")
+            parts.append(part)
+        return b"".join(parts)
+
+    def _decode_http_response(self, response_bytes: bytes) -> Any:
+        """Decode buffered response bytes as JSON when possible, otherwise text."""
+        text = response_bytes.decode("utf-8", errors="replace")
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
 
     def _parse_sse_response(self, sse_text: str) -> tuple:
         """

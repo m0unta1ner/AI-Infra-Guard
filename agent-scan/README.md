@@ -144,6 +144,43 @@ The `transform_response` field tells agent-scan which JSON key to extract the ag
 
 When using the **AIG Web UI**, this field corresponds to the "Response Parser" (响应解析器) input in the Agent configuration form — make sure to fill it with the correct key (e.g., `reply`).
 
+#### Custom SSE Responses
+
+When an HTTP endpoint returns `Content-Type: text/event-stream`, use `sse` in the Provider YAML to describe its event format. This example supports the `Object/Type/Status/Text` format, ignores `:ping`, prefers the completed full text, and uses incremental chunks only as a fallback:
+
+```yaml
+targets:
+  - id: "http"
+    config:
+      url: "https://agent.example.com/chat"
+      method: "POST"
+      body:
+        message: "{{prompt}}"
+      timeout_ms: 180000
+      sse:
+        require_done: true
+        accept_done_marker: true
+        chunks:
+          - when: {Object: content, Type: text, Status: in_progress}
+            text_path: Text
+        completed:
+          - when: {Object: content, Type: text, Status: completed}
+            text_path: Text
+        fallback_completed:
+          - when: {Object: message, Type: message, Status: completed}
+            text_path: Content[0].Text
+        done:
+          - when: {Object: response, Status: completed}
+        errors:
+          - when: {Object: error}
+            message_path: Message
+        metadata:
+          usage_path: Usage
+          timing_path: Timing
+```
+
+`text_path` and `message_path` are safe paths evaluated against each **individual SSE event JSON**, with dot and array-index syntax such as `payload.text` and `Content[0].Text`. `transform_response` applies to the final aggregated response and serves a different purpose. Defaults are 10,000 business events and 4 MiB; use `max_events` and `max_response_bytes` to adjust them within the allowed bounds. `require_done: true` prevents an interrupted stream from being reported as successful. Increase `timeout_ms` for slow cold starts. HTTPS certificates are verified by default; install the internal CA in the container instead of disabling verification.
+
 ## 🧪 Test Cases
 
 The `testcase/` directory contains ready-to-use vulnerable target agents for testing agent-scan's detection capabilities.

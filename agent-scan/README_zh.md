@@ -144,6 +144,43 @@ targets:
 
 在 **AIG Web UI** 中，这个字段对应 Agent 配置表单中的"响应解析器"输入框——务必填写正确的字段名（如 `reply`）。
 
+#### 自定义 SSE 响应
+
+当 HTTP 接口返回 `Content-Type: text/event-stream`，可在 Provider YAML 中用 `sse` 描述事件格式。下面的配置兼容 `Object/Type/Status/Text` 格式，会忽略 `:ping`，优先使用完成事件的全文，并在全文缺失时才回退到增量片段：
+
+```yaml
+targets:
+  - id: "http"
+    config:
+      url: "https://agent.example.com/chat"
+      method: "POST"
+      body:
+        message: "{{prompt}}"
+      timeout_ms: 180000
+      sse:
+        require_done: true
+        accept_done_marker: true
+        chunks:
+          - when: {Object: content, Type: text, Status: in_progress}
+            text_path: Text
+        completed:
+          - when: {Object: content, Type: text, Status: completed}
+            text_path: Text
+        fallback_completed:
+          - when: {Object: message, Type: message, Status: completed}
+            text_path: Content[0].Text
+        done:
+          - when: {Object: response, Status: completed}
+        errors:
+          - when: {Object: error}
+            message_path: Message
+        metadata:
+          usage_path: Usage
+          timing_path: Timing
+```
+
+`text_path`/`message_path` 是针对**单个 SSE 事件 JSON**的安全字段路径，支持点号与数组下标（如 `payload.text`、`Content[0].Text`）；`transform_response` 则针对聚合后的最终响应，两者用途不同。默认最多处理 10,000 个业务事件和 4 MiB 响应，可通过 `max_events`、`max_response_bytes`下调或在允许范围内调整。`require_done: true` 可避免把中断的流误判为成功。冷启动时间较长时应增大 `timeout_ms`。HTTPS 默认校验证书；内网证书应给容器安装可信 CA，不建议关闭校验。
+
 ## 🧪 测试用例
 
 `testcase/` 目录包含可直接使用的漏洞靶场 Agent，用于测试 agent-scan 的检测能力。
