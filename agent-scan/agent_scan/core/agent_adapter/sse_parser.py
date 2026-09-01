@@ -201,6 +201,10 @@ def parse_configured_sse(lines: Iterable[str], config: SSEParserConfig) -> Tuple
                 usage = get_path(event, config.metadata.usage_path)
             if config.metadata.timing_path:
                 timing = get_path(event, config.metadata.timing_path)
+            # A configured done event is a protocol-level terminal signal.
+            # Stop consuming immediately because some SSE servers keep the
+            # HTTP connection open and continue sending heartbeats afterward.
+            break
 
     if config.require_done and not done:
         raise SSEParseError("SSE stream ended before a configured completion event")

@@ -211,3 +211,31 @@ def test_concatenated_json_objects_are_not_valid_sse():
     )
     with pytest.raises(SSEParseError, match="before a configured completion"):
         parse_configured_sse([concatenated], config)
+
+
+def test_configured_done_stops_reading_persistent_stream():
+    config = SSEParserConfig(
+        require_done=True,
+        accept_done_marker=False,
+        chunks=[{"when": {"type": "delta"}, "text_path": "message"}],
+        completed=[{"when": {"type": "response"}, "text_path": "message"}],
+        done=[{"when": {"type": "done"}}],
+        max_response_bytes=1024,
+    )
+
+    def persistent_stream():
+        yield 'data: {"type":"response","message":"complete answer"}\n'
+        yield "\n"
+        yield 'data: {"type":"done"}\n'
+        yield "\n"
+        # This simulates a server that leaves the stream open and keeps
+        # emitting data. The parser must never consume these lines.
+        for _ in range(100):
+            yield f'data: {{"type":"heartbeat","padding":"{"x" * 200}"}}\n'
+            yield "\n"
+
+    raw, _, metadata = parse_configured_sse(persistent_stream(), config)
+
+    assert raw["content"] == "complete answer"
+    assert metadata["sse_completed"] is True
+    assert metadata["sse_event_count"] == 2
