@@ -119,6 +119,46 @@ const McpStepDetail: React.FC<McpStepDetailProps> = ({
   const [promptBankLoading, setPromptBankLoading] = useState(false);
   const [promptBankError, setPromptBankError] = useState('');
 
+  const downloadPromptBankFile = async (fileUrl: string, fallbackFilename: string) => {
+    if (!sessionId) {
+      setPromptBankError('无法下载：任务 ID 不存在');
+      return;
+    }
+    setPromptBankError('');
+    try {
+      const response = await fetch(`/api/v1/app/tasks/${sessionId}/downloadFile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileUrl }),
+      });
+      if (!response.ok) {
+        let message = '文件下载失败';
+        try {
+          const payload = await response.json();
+          message = payload.message || message;
+        } catch {
+          // The download endpoint may return a non-JSON proxy error.
+        }
+        throw new Error(message);
+      }
+
+      const disposition = response.headers.get('Content-Disposition');
+      const utf8Filename = disposition?.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+      const plainFilename = disposition?.match(/filename="?([^";]+)"?/i)?.[1];
+      const filename = decodeURIComponent(utf8Filename || plainFilename || fallbackFilename);
+      const blobUrl = window.URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      setPromptBankError(error instanceof Error ? error.message : '文件下载失败');
+    }
+  };
+
   useEffect(() => {
     if (!isSkillScan || !sessionId || !mcpResult?.prompt_bank ||
         !['completed', 'completed_with_errors'].includes(mcpResult.prompt_bank.status || '')) {
@@ -473,24 +513,28 @@ const McpStepDetail: React.FC<McpStepDetailProps> = ({
                     </div>
                     <div className="flex gap-2">
                       {mcpResult.prompt_bank.file && (
-                        <a
-                          href={mcpResult.prompt_bank.file}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          type="button"
+                          onClick={() => downloadPromptBankFile(
+                            mcpResult.prompt_bank!.file!,
+                            mcpResult.prompt_bank!.filename || 'prompt-bank.jsonl',
+                          )}
                           className="inline-flex items-center rounded-md bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700"
                         >
                           <Download className="mr-1 h-4 w-4" /> 下载题库
-                        </a>
+                        </button>
                       )}
                       {mcpResult.prompt_bank.summary_file && (
-                        <a
-                          href={mcpResult.prompt_bank.summary_file}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          type="button"
+                          onClick={() => downloadPromptBankFile(
+                            mcpResult.prompt_bank!.summary_file!,
+                            'prompt-bank-summary.json',
+                          )}
                           className="inline-flex items-center rounded-md border border-blue-200 bg-white px-3 py-2 text-sm text-blue-700 hover:bg-blue-100"
                         >
                           下载摘要
-                        </a>
+                        </button>
                       )}
                     </div>
                   </div>
