@@ -162,6 +162,12 @@ func UploadFile(server, filePath string) (*UploadFileResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("解析响应 JSON 失败: %v", err)
 	}
+	if uploadResp.Status != 0 {
+		return nil, fmt.Errorf("上传失败: %s", uploadResp.Message)
+	}
+	if uploadResp.Data.FileUrl == "" {
+		return nil, fmt.Errorf("上传失败: 响应中缺少文件地址")
+	}
 
 	return &uploadResp, nil
 }
